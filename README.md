@@ -1,131 +1,154 @@
-# UE -> Unity 代码迁移工具 (MVP v0.1)
+# CodeUEToUnity
 
-把一个 UE C++ 角色类的**移动 / 跳跃 / 爬墙 / 相机**逻辑, 自动翻译成能编译通过的 Unity C# 脚本。
+基于 LLM 的 Unreal Engine C++ 到 Unity C# 代码迁移工具。
 
-当前版本刻意做窄: 只覆盖角色控制器这一类代码, 但管道是通用的 —— 引擎抽象层、验证闭环、
-映射知识库都在, 以后往里加 Actor/Component/委托/Timer/状态机只是扩展映射表和提示词,
-不需要改架构。
+输入 UE 源码，输出可直接编译的 Unity C# 脚本，并生成一份标明「必须人工处理」事项的迁移报告。
+当前覆盖角色控制器：位移、跳跃、爬墙、弹簧臂相机。
 
-> **想自己动手改这个工具, 先看 [docs/手写指南.md](docs/手写指南.md)** ——
-> 逐个文件夹、逐个文件讲清楚哪些是手写的、哪些是自动生成的、语法规则是什么、常踩的坑有哪些。
+## 特性
 
-## 30 秒上手
+- **阶段化流水线**：`scan` → `plan` → `translate` → `verify` → `report` 五个独立阶段，中间产物全部落盘，任一阶段可单独重跑。
+- **映射表驱动**：内置 112 条 UE→Unity 符号映射，每条附带语义差异说明，包括单位换算、坐标系差异、生命周期对应关系，以及没有对应物时的替代方案。
+- **编译门禁**：引用本机 Unity 安装目录下的引擎程序集做编译校验，不依赖 Unity 编辑器，也不需要激活许可证，单次校验约 1 秒。
+- **双工作模式**：可直连任意 OpenAI 兼容接口自动翻译，也可由人工或外部模型产出结果后回填。两种模式共用同一套任务包。
+- **迁移报告**：汇总每个翻译单元的自评置信度与编译状态，并把必须人工处理的项单独列出。
+- **环境自检**：`doctor` 命令一次性检查路径、映射表、引擎程序集、编译链与接口连通性。
+
+## 工作原理
+
+| 阶段 | 职责 | 输出 |
+| --- | --- | --- |
+| `scan` | 定位翻译单元，剥离注释后提取 UE 符号，与映射表比对 | `work/units.json`，含映射覆盖率与未覆盖符号清单 |
+| `plan` | 组装翻译任务包：系统提示 + 本单元命中的映射条目 + 源码 | `work/tasks/<单元>.prompt.md` |
+| `translate` | 调用模型或读取人工回填的产物，归一化为统一结构 | `work/results/<单元>.json`、`out/UnityScripts/*.cs` |
+| `verify` | 编译生成的 C#，解析结构化诊断信息 | `work/verify.json` |
+| `report` | 汇总上述结果，生成迁移报告 | `reports/migration_report.md` |
+
+`scan` 输出的未覆盖符号清单是本项目的扩展入口：它指出映射表尚未覆盖的 UE 符号，
+补充后覆盖率随之上升，翻译过程中的不确定性相应减少。
+
+## 环境要求
+
+| 依赖 | 说明 |
+| --- | --- |
+| Windows + PowerShell | 当前仅在 Windows 上验证 |
+| Python 3.10+ | 由 `uv` 管理，无需手动创建虚拟环境 |
+| .NET SDK | 编译门禁使用，本项目在 9.0.316 上验证 |
+| Unity 2021.3 | 仅需 `Editor/Data/Managed/UnityEngine` 目录下的引擎程序集 |
+
+## 快速开始
 
 ```powershell
-cd E:\XYProjects\UEToUnity
-
-# 0. 环境自检: 路径 / 映射表 / Unity 程序集 / API 连通性, 一次把问题找出来
+# 环境自检
 uv run migrate.py doctor
 
-# 看扫描结果: 找出翻译单元, 统计映射覆盖率, 列出还没覆盖的 UE 符号
-uv run migrate.py scan
-
-# 生成每个单元发给模型的完整任务包
-uv run migrate.py plan
-
-# 翻译: provider=agent 时读取人工/智能体写好的结果
-uv run migrate.py translate
-
-# 编译门禁: 用 Unity 2021.3 真实程序集编译生成的 C#, 1~2 秒出结果
-uv run migrate.py verify
-
-# 生成迁移报告(含必须人工处理的清单)
-uv run migrate.py report
-
-# 或者一条命令全跑
+# 全流程
 uv run migrate.py all
 ```
 
-首次运行 `uv` 会自动装好 Python 依赖, 不需要手工建虚拟环境。
+`uv` 会在首次运行时自动安装 Python 依赖。
+
+### 分步执行
+
+```powershell
+uv run migrate.py scan        # 扫描源码，输出覆盖率与未覆盖符号
+uv run migrate.py plan        # 生成翻译任务包
+uv run migrate.py translate   # 翻译
+uv run migrate.py verify      # 编译门禁
+uv run migrate.py report      # 生成迁移报告
+```
+
+## 命令参考
+
+| 命令 | 说明 |
+| --- | --- |
+| `doctor` | 环境自检：路径、映射表、引擎程序集、编译链、接口连通性 |
+| `scan` | 扫描 `input/` 下的 UE 源码，统计映射覆盖率 |
+| `plan` | 生成翻译任务包 |
+| `translate` | 完成翻译，`--unit <前缀>` 可只处理指定单元 |
+| `verify` | 用真实 Unity 程序集编译 `out/UnityScripts/` |
+| `report` | 生成迁移报告 |
+| `all` | 依次执行完整流程 |
+
+## 配置
+
+配置文件为 `config.yaml`，分为 `paths`、`provider`、`api`、`translate`、`verify` 五段。
+
+### 工作模式
+
+`provider` 有两个取值：
+
+- `agent`：翻译结果由人工或外部模型产出，回填到 `work/tasks/<单元>.files/` 后执行 `translate`。
+- `api`：直连 OpenAI 兼容接口完成翻译。
+
+切换到 `api` 模式需要配置 `api` 段并设置 API 密钥：
+
+```yaml
+provider: api
+api:
+  base_url: "https://api.deepseek.com/v1"
+  model: "deepseek-chat"
+  api_key_env: "DEEPSEEK_API_KEY"
+```
+
+`api_key_env` 填写的是环境变量的名称，密钥本身不写入配置文件。
+
+```powershell
+$env:DEEPSEEK_API_KEY = "sk-..."
+```
+
+需要永久生效时：
+
+```powershell
+[Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "sk-...", "User")
+```
+
+除 DeepSeek 外，通义千问、智谱、Kimi 以及本机的 vLLM、Ollama 均可使用，
+前提是接口兼容 OpenAI 的 `/chat/completions`。若服务不支持 `response_format`，
+把 `api.json_mode` 改为 `false`。
+
+### 引擎程序集路径
+
+`paths.unity_managed` 指向 Unity 的引擎程序集目录，更换机器或 Unity 版本时需要修改：
+
+```yaml
+paths:
+  unity_managed: "C:/Program Files/Unity/Hub/Editor/2021.3.45f1c1/Editor/Data/Managed/UnityEngine"
+```
+
+`verify.unity_modules` 列出编译门禁需要引用的程序集。若生成代码用到了新的 Unity 模块，
+把对应的 `UnityEngine.*Module.dll` 加入该列表即可，无需改动代码。
+
+## 输入约定
+
+- 只识别 `.h` 后缀的头文件，并按同名查找 `.cpp`。
+- 头文件中必须出现 `UCLASS(`、`USTRUCT(`、`UENUM(` 或 `UINTERFACE(` 之一，否则该文件会被跳过。
+- 翻译单元的名称取自文件名，而非类名。
+- `.cpp` 缺失时仍可处理，但翻译质量会下降。
 
 ## 目录结构
 
 ```
-migrate.py                     五个阶段的 CLI(单文件)
-config.yaml                    路径 / LLM 提供方 / 编译参数
-mappings/ue2unity.yaml         ★ UE->Unity 符号映射表, 工具的"知识"
-prompts/system_unity.md        ★ 目标侧架构约定和语义陷阱清单
-prompts/unit_translate.md      单单元翻译模板
-input/                         放 UE C++ 源码(.h 与同名 .cpp 配对即一个翻译单元)
-work/                          中间产物
-  units.json                     扫描结果与覆盖率
-  tasks/<单元>.prompt.md         发给模型的完整任务包
-  tasks/<单元>.files/*.cs        agent 模式下人工/智能体提供的 C#
-  tasks/<单元>.notes.json        置信度/提示/待办
-  results/<单元>.json            归一化后的翻译结果
-  verify.json                    编译诊断
-out/UnityScripts/              产出的 Unity C# 脚本
-verify/CompileCheck.csproj     自动生成的编译门禁工程
-reports/migration_report.md    迁移报告
+migrate.py                      命令行入口，五个阶段与自检
+config.yaml                     路径、工作模式、接口与编译参数
+mappings/ue2unity.yaml          UE→Unity 符号映射表
+prompts/system_unity.md         目标侧架构约定与语义陷阱清单
+prompts/unit_translate.md       单单元任务包模板
+input/                          UE 源码，同名 .h/.cpp 配对为一个翻译单元
+out/UnityScripts/               生成的 Unity C# 脚本
+verify/CompileCheck.csproj      编译门禁工程（自动生成）
+reports/migration_report.md     迁移报告（自动生成）
+work/                           中间产物（自动生成）
+docs/                           开发文档
 ```
 
-## 五个阶段
+各目录与文件的详细说明见 [docs/手写指南.md](docs/手写指南.md)。
 
-| 阶段 | 做什么 | 关键点 |
-| --- | --- | --- |
-| `scan` | 找出翻译单元, 匹配映射表, 剥离注释后提取 UE 符号 | 输出"未覆盖符号清单" —— 这是工具的自我进化入口 |
-| `plan` | 把系统提示 + 相关映射条目 + 源码拼成任务包 | 只把**本单元真正用到的**映射条目喂给模型, 省 token 又减少干扰 |
-| `translate` | `api` 直连模型 / `agent` 读人工产物 | 两种 provider 共用同一套任务包, 可随时切换 |
-| `verify` | 引用真实 `UnityEngine.*.dll` 编译生成的脚本 | 不要许可证、不要 Unity 编辑器, 1~2 秒出结果 |
-| `report` | 汇总置信度、编译状态、必须人工处理的项 | 明确列出"工具做不了、必须人来"的部分 |
+## 扩展方式
 
-## 编译门禁为什么这么做
+**补充映射知识**
 
-`verify/CompileCheck.csproj` 直接引用本机 Unity 安装目录下的真实程序集:
-
-```
-C:\Program Files\Unity\Hub\Editor\2021.3.45f1c1\Editor\Data\Managed\UnityEngine\*.dll
-```
-
-比手写 `UnityEngine` 桩代码准得多(桩只能校验你想到的那部分 API), 又比跑 Unity batchmode 快得多
-(不用激活许可证, 不用起编辑器)。如果你的 Unity 版本或安装路径不同, 改 `config.yaml` 里的
-`paths.unity_managed` 即可。
-
-## 换成真正的 LLM 自动翻译
-
-改 `config.yaml` 的两处:
-
-```yaml
-provider: api                                # 原来是 agent
-api:
-  base_url: "https://api.deepseek.com/v1"   # 任何 OpenAI 兼容接口都行
-  model: "deepseek-chat"
-  api_key_env: "DEEPSEEK_API_KEY"           # 只写"变量名"; 密钥走环境变量, 不落盘
-```
-
-密钥只从环境变量读, **不写进任何配置文件** —— 这样 `config.yaml` 可以放心提交和分享。
-
-在 PowerShell 里设置(只在当前窗口有效):
-
-```powershell
-$env:DEEPSEEK_API_KEY = "sk-你的密钥"
-```
-
-想永久生效(设置后需要重开终端):
-
-```powershell
-[Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "sk-你的密钥", "User")
-```
-
-设完先自检, 确认接口通、JSON 模式可用, 再跑全流程:
-
-```powershell
-uv run migrate.py doctor
-uv run migrate.py all
-```
-
-另外 `provider` 也可以用环境变量临时覆盖, 方便在两种模式之间切换, 不必反复改配置:
-
-```powershell
-$env:MIGRATE_PROVIDER = "api"     # 或 "agent"
-```
-
-也支持通义千问(百炼)、智谱、Kimi、以及本机 vLLM/Ollama —— 只要接口兼容 OpenAI 的
-`/chat/completions` 并且支持 `response_format: json_object`。代码不出内网就指向本机模型。
-
-## 怎么扩展(这是设计里的重点)
-
-**加映射知识** —— 直接往 `mappings/ue2unity.yaml` 的 `entries` 里加一组:
+在 `mappings/ue2unity.yaml` 的 `entries` 下追加条目：
 
 ```yaml
   - id: x-my-symbol
@@ -133,40 +156,31 @@ $env:MIGRATE_PROVIDER = "api"     # 或 "agent"
     ue: FMyThing
     unity: MyThingClass
     confidence: 0.9
-    note: "语义差异写在 note 里, 这一列才是真正值钱的部分"
+    note: "单位差异、语义陷阱，或无对应物时的替代方案"
 ```
 
-`scan` 报出什么未覆盖符号, 就往这里补什么, 补完覆盖率上升、模型幻觉下降。
+`ue` 字段采用子串匹配。单个单元命中的条目超过 70 条时会按文件顺序截断，
+常用条目应放在文件靠前的位置。
 
-**加迁移目标** —— 编辑 `prompts/system_unity.md`, 写入你的目标架构约定。
-想让输出走新输入系统、Cinemachine、或者你自己的框架基类, 都在这里定。
+**调整目标架构**
 
-**加翻译范围** —— 把新的 UE `.h/.cpp` 丢进 `input/`, 重跑即可。
-`scan` 会告诉你映射表还缺哪些符号。
+`prompts/system_unity.md` 的内容会作为 system message 原样发送给模型。
+若目标侧改用新版输入系统、Cinemachine 或自定义框架基类，在此处调整。
 
-**加一个真实反馈回路** —— 每次人工修正过的产物, 就是最好的 few-shot 样本。
-把 `out/UnityScripts/` 里被接受的版本收集进一份 `mappings/accepted_pairs/`,
-在 `plan` 阶段按相似度检索注入任务包, 这是准确率提升最快的一步。
+**扩大迁移范围**
 
-## 当前能力边界(诚实的部分)
+把新的 `.h`、`.cpp` 放入 `input/`，重新执行 `scan`，即可看到映射表尚未覆盖的符号。
 
-已经做到的:
+## 已知限制
 
-- 角色移动 / 跳跃 / 爬墙 / 弹簧臂相机这套逻辑的迁移, 产物**编译通过**。
-- 自动识别并报告"必须人工处理"的项(碰撞层、按键映射、Layer、轴值域差异)。
-- 单位换算(厘米->米)、Z-up -> Y-up、Tick -> Update、无重力 -> 自写重力等语义改造。
+- **不支持 Blueprint**：`.uasset` 为二进制图结构，需要先由 UE 编辑器导出图数据。
+- **无跨文件依赖分析**：一个 `.h`、`.cpp` 对即一个翻译单元，不构建调用图。
+- **仅有编译校验，无行为校验**：通过编译不代表行为等价，数值与手感一致性仍需人工验证。
+- **无增量缓存**：源码变更后整批重跑。
+- **无自动修复闭环**：`config.yaml` 中的 `max_fix_rounds` 尚未接入，编译报错不会自动回灌给模型。
 
-还没做的:
+## 技术栈
 
-- **Blueprint**: `.uasset` 是二进制图结构, 必须先让 UE 编辑器导出图 JSON。这是最大的缺口。
-- **跨文件依赖分析**: 目前一个 `.h/.cpp` 对就是一个单元, 不做调用图。
-- **行为等价验证**: 只有编译门禁, 没有差分测试。手感一致性仍需人工在编辑器里调。
-- **增量缓存**: 改了源码会整批重跑, 还没有按内容哈希跳过。
-- **自动修复循环**: `config.yaml` 里有 `max_fix_rounds`, 但回到 `translate` 的闭环还没接上。
-
-## 建议的下一步
-
-1. 把你真实的 UE 角色类丢进 `input/`, 跑 `scan` 看映射表缺什么, 补齐后再 `plan`。
-2. 配一个 API Key, 走通"模型直译 + 编译门禁"的自动路径。
-3. 拿一个真实关卡在 UE 和 Unity 里用同一组输入跑, 比对位置曲线, 这才是行为正确性的证据。
-4. 再往上加 Blueprint 导出和增量缓存。
+- Python 3.12，依赖由 `uv` 管理，使用 PyYAML
+- .NET SDK 9 与 MSBuild，编译门禁引用 Unity 2021.3 引擎程序集
+- OpenAI 兼容 Chat Completions 接口，`response_format: json_object`
