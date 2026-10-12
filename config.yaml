@@ -1,0 +1,38 @@
+# 迁移工具配置
+
+paths:
+  input: input            # UE C++ 源码目录
+  work: work              # 中间产物(扫描结果 / 任务包 / 模型响应)
+  output: out/UnityScripts # 生成的 Unity C# 脚本
+  reports: reports        # 迁移报告
+  mappings: mappings/ue2unity.yaml
+  prompts: prompts
+  unity_managed: "C:/Program Files/Unity/Hub/Editor/2021.3.45f1c1/Editor/Data/Managed/UnityEngine"
+
+# LLM 提供方: api = 调用 OpenAI 兼容接口, agent = 由人/智能体把响应写到 work/tasks/<unit>.resp.json
+provider: agent
+
+api:
+  base_url: "https://api.deepseek.com/v1"   # 也可用通义千问/智谱/Kimi/本地 vLLM, 只要兼容 OpenAI 协议
+  model: "deepseek-chat"
+  api_key_env: "DEEPSEEK_API_KEY"           # 只写"变量名"; 密钥本身走环境变量, 不落盘
+  json_mode: true                           # 服务不支持 response_format 时报 400, 改成 false
+  temperature: 0.2
+  max_tokens: 8192
+  timeout: 300
+
+translate:
+  max_fix_rounds: 2      # 编译报错后最多自动修复几轮
+  max_source_chars: 24000 # 单个单元源码超过这个长度会截断并警告
+
+verify:
+  target_framework: netstandard2.1
+  unity_modules:         # 编译门禁需要引用的 Unity 程序集
+    - UnityEngine.CoreModule.dll
+    - UnityEngine.PhysicsModule.dll
+    - UnityEngine.InputLegacyModule.dll
+    - UnityEngine.AIModule.dll
+    - UnityEngine.AnimationModule.dll
+    - UnityEngine.UIModule.dll
+    - UnityEngine.IMGUIModule.dll
+    - UnityEngine.TerrainModule.dll

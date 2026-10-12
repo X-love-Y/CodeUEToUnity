@@ -1,0 +1,822 @@
+# ============================================================================
+# UE -> Unity 符号映射表  v0.1
+# ----------------------------------------------------------------------------
+# 作用: 1) 给 LLM 提供确定性的对应关系, 减少幻觉
+#       2) 对源码做"符号覆盖率"分析, 找出映射表还没覆盖的长尾
+# 维护: 这张表是数据, 不是代码. 每遇到一个新符号就往这里加一行, 工具立刻变强.
+#
+# 字段:
+#   id         唯一标识
+#   category   分类 (type / macro / lifecycle / input / character / camera / physics / math / debug / timer)
+#   ue         UE 侧符号 (用于在源码里做文本匹配)
+#   unity      Unity 侧对应写法
+#   confidence 0~1, 低于 0.8 会进"人工确认"清单
+#   note       语义差异说明 —— 这一列才是真正值钱的东西
+# ============================================================================
+
+meta:
+  version: "0.1"
+  source_engine: "Unreal Engine 5 (C++)"
+  target_engine: "Unity 2021.3 (C# / CharacterController)"
+  unit_scale: "UE 1cm, Unity 1m -> 数值需要 *0.01 / *100"
+
+entries:
+  # ---------------- 基础类型 ----------------
+  - id: t-vector
+    category: type
+    ue: FVector
+    unity: Vector3
+    confidence: 1.0
+    note: "单位不同: UE 用厘米, Unity 用米. 位置/尺寸转换要乘 0.01, 速度同理. 纯方向向量不用换算."
+
+  - id: t-vector2d
+    category: type
+    ue: FVector2D
+    unity: Vector2
+    confidence: 1.0
+    note: "同上单位问题."
+
+  - id: t-rotator
+    category: type
+    ue: FRotator
+    unity: Quaternion
+    confidence: 0.9
+    note: "UE Rotator 是 Pitch/Yaw/Roll 三元组(Pitch 抬头为正), Unity 用 Quaternion + Vector3 euler. 注意 Unity euler.x 是俯仰, 但正负方向与 UE Pitch 相反."
+
+  - id: t-quat
+    category: type
+    ue: FQuat
+    unity: Quaternion
+    confidence: 1.0
+    note: "直接对应."
+
+  - id: t-transform
+    category: type
+    ue: FTransform
+    unity: "(position, rotation, scale) 三元组"
+    confidence: 0.7
+    note: "Unity 没有 FTransform 等价物, 需要拆成 Vector3 + Quaternion + Vector3."
+
+  - id: t-string
+    category: type
+    ue: FString
+    unity: string
+    confidence: 1.0
+    note: ""
+
+  - id: t-name
+    category: type
+    ue: FName
+    unity: string
+    confidence: 0.8
+    note: "FName 是不区分大小写且内部化的索引, 直接换 string 会丢失大小写不敏感的比较语义."
+
+  - id: t-text
+    category: type
+    ue: FText
+    unity: string
+    confidence: 0.6
+    note: "FText 带本地化信息, 换 string 会丢掉本地化, 需人工确认是否要接 Unity Localization."
+
+  - id: t-array
+    category: type
+    ue: TArray
+    unity: List<T>
+    confidence: 1.0
+    note: "TArray.Add -> List.Add, TArray.Num() -> List.Count, TArray.IsValidIndex -> (i >= 0 && i < list.Count)"
+
+  - id: t-map
+    category: type
+    ue: TMap
+    unity: Dictionary<K,V>
+    confidence: 1.0
+    note: "TMap.FindOrAdd -> Dictionary.TryGetValue + 赋值"
+
+  - id: t-set
+    category: type
+    ue: TSet
+    unity: HashSet<T>
+    confidence: 1.0
+    note: ""
+
+  - id: t-weakptr
+    category: type
+    ue: TWeakObjectPtr
+    unity: WeakReference / 直接引用 + null 检查
+    confidence: 0.7
+    note: "Unity 的 UnityEngine.Object 有'假 null'问题: 被 Destroy 的对象 != null 但 == null. 一律用 'if (obj == null)' 而不是 '?.'. "
+
+  - id: t-subclassof
+    category: type
+    ue: TSubclassOf
+    unity: System.Type / 具体类引用
+    confidence: 0.75
+    note: "TSubclassOf 是运行时按类实例化, Unity 侧通常用 prefab 引用 + Instantiate 代替."
+
+  # ---------------- 反射宏 ----------------
+  - id: m-uclass
+    category: macro
+    ue: UCLASS
+    unity: "public class X : MonoBehaviour"
+    confidence: 1.0
+    note: "UE 的继承是'引擎对象体系', Unity 是'组件组合'. Actor 类应映射为 MonoBehaviour 挂在 GameObject 上, 而不是继承."
+
+  - id: m-ustruct
+    category: macro
+    ue: USTRUCT
+    unity: "[System.Serializable] public class / struct"
+    confidence: 1.0
+    note: "想在 Inspector 里编辑必须加 [System.Serializable]."
+
+  - id: m-uenum
+    category: macro
+    ue: UENUM
+    unity: "public enum X : byte"
+    confidence: 1.0
+    note: ""
+
+  - id: m-uproperty
+    category: macro
+    ue: UPROPERTY
+    unity: "[SerializeField] private / public 字段"
+    confidence: 1.0
+    note: "UPROPERTY 既管序列化也管 GC 引用. Unity 侧 [SerializeField] private 与之最接近, 但要保证引用不是循环依赖."
+
+  - id: m-uproperty-edit
+    category: macro
+    ue: "UPROPERTY(EditAnywhere"
+    unity: "[SerializeField] private + [Tooltip(\"...\")]"
+    confidence: 1.0
+    note: "EditAnywhere 对应 Inspector 可见, Unity 里私有字段必须显式加 [SerializeField]."
+
+  - id: m-ufunction
+    category: macro
+    ue: UFUNCTION
+    unity: "public 方法"
+    confidence: 1.0
+    note: ""
+
+  - id: m-blueprintcallable
+    category: macro
+    ue: BlueprintCallable
+    unity: public 方法
+    confidence: 1.0
+    note: "BlueprintCallable -> public; BlueprintReadOnly -> 只读属性; BlueprintImplementableEvent -> UnityEvent / Action 回调."
+
+  - id: m-generated-body
+    category: macro
+    ue: GENERATED_BODY
+    unity: "(删除)"
+    confidence: 1.0
+    note: "宏产生的反射代码 Unity 不需要, 整行删掉."
+
+  - id: m-uinterface
+    category: macro
+    ue: UINTERFACE
+    unity: "public interface IX"
+    confidence: 0.9
+    note: "Unity 的接口可以带默认实现(C# 8), 但 MonoBehaviour 上的接口引用要 GetComponent<IX>() 取."
+
+  # ---------------- 生命周期 ----------------
+  - id: l-beginplay
+    category: lifecycle
+    ue: BeginPlay
+    unity: Start()
+    confidence: 1.0
+    note: "BeginPlay -> Start (或 Awake 如果要在其他脚本 Start 之前完成初始化)."
+
+  - id: l-tick
+    category: lifecycle
+    ue: Tick
+    unity: Update()
+    confidence: 0.95
+    note: "关键差异: UE 的 Tick 有固定的 DeltaTime 参数, Unity Update 用 Time.deltaTime. 物理相关逻辑应用 FixedUpdate + Time.fixedDeltaTime. UE 可通过 TickInterval/PrimaryActorTick 控制频率, Unity 没有, 需要自己写计时器."
+
+  - id: l-postinit
+    category: lifecycle
+    ue: PostInitializeComponents
+    unity: Awake()
+    confidence: 0.9
+    note: "Awake 早于 Start, 且所有对象的 Awake 都先于任何 Start 执行."
+
+  - id: l-endplay
+    category: lifecycle
+    ue: EndPlay
+    unity: OnDestroy()
+    confidence: 0.95
+    note: ""
+
+  - id: l-setupinput
+    category: lifecycle
+    ue: SetupPlayerInputComponent
+    unity: "Start()/Awake() 中直接读输入"
+    confidence: 0.85
+    note: "Unity 没有集中式输入绑定. 旧输入系统在 Update 里读 Input.GetAxisRaw / GetKeyDown; 新输入系统需要新建 InputActions 资产."
+
+  # ---------------- Transform / Actor ----------------
+  - id: a-getlocation
+    category: character
+    ue: GetActorLocation
+    unity: transform.position
+    confidence: 1.0
+    note: "返回世界坐标. 注意单位换算."
+
+  - id: a-setlocation
+    category: character
+    ue: SetActorLocation
+    unity: "transform.position = ... (或 controller.Move 做带碰撞移动)"
+    confidence: 0.85
+    note: "直接赋值等于瞬移且会穿墙; 想要碰撞响应必须用 CharacterController.Move 或 Rigidbody.MovePosition."
+
+  - id: a-forward
+    category: character
+    ue: GetActorForwardVector
+    unity: transform.forward
+    confidence: 1.0
+    note: ""
+
+  - id: a-right
+    category: character
+    ue: GetActorRightVector
+    unity: transform.right
+    confidence: 1.0
+    note: ""
+
+  - id: a-up
+    category: character
+    ue: GetActorUpVector
+    unity: transform.up
+    confidence: 1.0
+    note: ""
+
+  - id: a-rotation
+    category: character
+    ue: GetActorRotation
+    unity: transform.rotation / transform.eulerAngles
+    confidence: 1.0
+    note: ""
+
+  - id: a-addworldoffset
+    category: character
+    ue: AddActorWorldOffset
+    unity: "transform.position += delta (或 controller.Move(delta))"
+    confidence: 0.85
+    note: "带 sweep 的版本对应 CharacterController.Move."
+
+  # ---------------- 角色与移动 ----------------
+  - id: c-acharacter
+    category: character
+    ue: "ACharacter"
+    unity: "MonoBehaviour + CharacterController"
+    confidence: 0.85
+    note: "UE 的 ACharacter 自带胶囊体 + CharacterMovementComponent. Unity 需要手动挂 CharacterController 组件并自己实现重力/跳跃/落地检测, 这是本次迁移工作量最大的部分."
+
+  - id: c-movementcomponent
+    category: character
+    ue: CharacterMovement
+    unity: "CharacterController + 自写重力/速度状态机"
+    confidence: 0.8
+    note: "Unity 的 CharacterController 不做重力(必须自己写), 不做自动转身, 不做跳跃. 全部需要在 C# 里重建."
+
+  - id: c-maxwalkspeed
+    category: character
+    ue: MaxWalkSpeed
+    unity: "自定义 moveSpeed 字段"
+    confidence: 0.9
+    note: "单位换算: UE cm/s -> Unity m/s 要 /100."
+
+  - id: c-jumpzvelocity
+    category: character
+    ue: JumpZVelocity
+    unity: "jumpSpeed = Mathf.Sqrt(jumpHeight * -2f * gravity)"
+    confidence: 0.8
+    note: "UE 直接给起跳速度, Unity 习惯给跳跃高度再反推初速度. 重力值也要跟着换算."
+
+  - id: c-gravityscale
+    category: character
+    ue: GravityScale
+    unity: "自定义 gravity 字段"
+    confidence: 0.9
+    note: "UE 默认重力约 -980 cm/s^2 (世界设置), Unity Physics.gravity 默认 -9.81 m/s^2."
+
+  - id: c-velocity
+    category: character
+    ue: "GetCharacterMovement()->Velocity"
+    unity: "自定义 velocity 字段 (CharacterController 不暴露速度)"
+    confidence: 0.9
+    note: "CharacterController.velocity 只在 Move 后有效且是只读的, 一般自己维护速度状态."
+
+  - id: c-isonground
+    category: character
+    ue: IsMovingOnGround
+    unity: controller.isGrounded
+    confidence: 0.9
+    note: "isGrounded 有粘滞: 离地后仍可能保持 true 一两帧, 需要配合 velocity.y <= 0 判断."
+
+  - id: c-movementmode
+    category: character
+    ue: SetMovementMode
+    unity: "自定义状态枚举 + 分支逻辑"
+    confidence: 0.7
+    note: "MOVE_Walking / MOVE_Flying / MOVE_Custom 这套模式在 Unity 没有对应物, 必须翻译成显式的状态机(如 EMovementState). 这是架构适配的核心点, 不能逐行直译."
+
+  - id: c-jump
+    category: character
+    ue: Jump()
+    unity: "velocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);"
+    confidence: 0.85
+    note: "UE 的 Jump 由 CharacterMovement 处理; Unity 要自己设纵向速度."
+
+  - id: c-jumpmaxhold
+    category: character
+    ue: JumpMaxHoldTime
+    unity: "按住跳跃键时持续/additional 施加上升速度"
+    confidence: 0.7
+    note: "UE 支持长按跳更高, 需要自己实现."
+
+  - id: c-stopjumping
+    category: character
+    ue: StopJumping
+    unity: "if (velocity.y > 0) velocity.y *= 0.5f; (松手切断上升)"
+    confidence: 0.7
+    note: "对应 Unity 常见的可变跳跃高度写法."
+
+  - id: c-landed
+    category: character
+    ue: Landed
+    unity: "自己检测 grounded 由 false 变 true 的那一帧"
+    confidence: 0.8
+    note: "Unity 没有落地回调, 必须用前一帧状态对比实现."
+
+  # ---------------- 相机 ----------------
+  - id: k-springarm
+    category: camera
+    ue: USpringArmComponent
+    unity: "自写弹簧臂(枢轴 Transform + Raycast 收臂) 或 Cinemachine"
+    confidence: 0.7
+    note: "Unity 没有内置 SpringArm. 要么自己实现(枢轴+射线检测收臂距离), 要么引入 Cinemachine. 最小实现是自己写."
+
+  - id: k-cameracomponent
+    category: camera
+    ue: UCameraComponent
+    unity: Camera (组件引用)
+    confidence: 0.9
+    note: ""
+
+  - id: k-armlength
+    category: camera
+    ue: TargetArmLength
+    unity: "自定义 armLength 字段"
+    confidence: 0.9
+    note: "单位换算."
+
+  - id: k-socketoffset
+    category: camera
+    ue: SocketOffset
+    unity: "自定义 socketOffset 字段 (Vector3)"
+    confidence: 0.9
+    note: ""
+
+  - id: k-targetoffset
+    category: camera
+    ue: TargetOffset
+    unity: "自定义 targetOffset 字段"
+    confidence: 0.9
+    note: ""
+
+  - id: k-usepawncontrolrotation
+    category: camera
+    ue: bUsePawnControlRotation
+    unity: "弹簧臂跟随摄像机俯仰角(自写)"
+    confidence: 0.8
+    note: "决定弹簧臂是否吃控制器的 Pitch."
+
+  - id: k-docollisiontest
+    category: camera
+    ue: bDoCollisionTest
+    unity: "Physics.SphereCast 收缩臂长"
+    confidence: 0.75
+    note: "Unity 必须手写: 从枢轴往相机方向做 SphereCast, 撞到就把臂长收到命中点."
+
+  - id: k-controlrotation
+    category: camera
+    ue: GetControlRotation
+    unity: "自定义 yaw/pitch 变量"
+    confidence: 0.85
+    note: "控制器旋转在 Unity 侧就是自己维护的两个 float."
+
+  - id: k-addyaw
+    category: camera
+    ue: AddControllerYawInput
+    unity: "yaw += value * sensitivity;"
+    confidence: 0.9
+    note: ""
+
+  - id: k-addpitch
+    category: camera
+    ue: AddControllerPitchInput
+    unity: "pitch -= value * sensitivity; pitch = Mathf.Clamp(pitch, minPitch, maxPitch);"
+    confidence: 0.9
+    note: "注意 Unity 里鼠标 Y 轴向上是正值, UE 的 AddControllerPitchInput 正值是抬头, 但两边的应用方向不同, 需要实测确认符号."
+
+  # ---------------- 输入 ----------------
+  - id: i-bindaxis
+    category: input
+    ue: BindAxis
+    unity: "Update 中 Input.GetAxisRaw(\"Horizontal\"/\"Vertical\")"
+    confidence: 0.8
+    note: "UE 的轴映射在项目设置里定义; Unity 旧输入系统的轴名(如 Horizontal/Vertical/Mouse X/Mouse Y)是内置的, 自定义轴要在 InputManager 里加."
+
+  - id: i-bindaction-pressed
+    category: input
+    ue: IE_Pressed
+    unity: Input.GetKeyDown(KeyCode.X)
+    confidence: 0.9
+    note: ""
+
+  - id: i-bindaction-released
+    category: input
+    ue: IE_Released
+    unity: Input.GetKeyUp(KeyCode.X)
+    confidence: 0.9
+    note: ""
+
+  - id: i-keyboard-space
+    category: input
+    ue: "\"Jump\""
+    unity: KeyCode.Space
+    confidence: 0.9
+    note: "动作名到具体按键的映射取决于 UE 项目的 Input 设置, 表里的对应是常见约定, 需人工确认."
+
+  - id: i-mousex
+    category: input
+    ue: "\"TurnRate\" / \"LookUpRate\""
+    unity: "\"Mouse X\" / \"Mouse Y\""
+    confidence: 0.85
+    note: "UE 的 Turn/LookUp 轴通常取鼠标 delta."
+
+  - id: i-mouse-enable
+    category: input
+    ue: "bShowMouseCursor = false"
+    unity: "Cursor.lockState = CursorLockMode.Locked; Cursor.visible = false;"
+    confidence: 0.9
+    note: ""
+
+  # ---------------- 物理与射线 ----------------
+  - id: p-linetrace
+    category: physics
+    ue: LineTraceSingleByChannel
+    unity: "Physics.Raycast(origin, dir, out RaycastHit hit, dist, layerMask)"
+    confidence: 0.85
+    note: "UE 的碰撞通道(ECC_Visibility 等)对应 Unity 的 Layer + LayerMask. Unity 需要在项目里预先创建对应 Layer 并手动指定, 这一步工具做不了."
+
+  - id: p-hitresult
+    category: physics
+    ue: FHitResult
+    unity: RaycastHit
+    confidence: 1.0
+    note: ""
+
+  - id: p-impactnormal
+    category: physics
+    ue: ImpactNormal
+    unity: hit.normal
+    confidence: 1.0
+    note: ""
+
+  - id: p-hitactor
+    category: physics
+    ue: "Hit.GetActor()"
+    unity: hit.collider.gameObject
+    confidence: 0.95
+    note: ""
+
+  - id: p-queryparams
+    category: physics
+    ue: FCollisionQueryParams
+    unity: "LayerMask + QueryTriggerInteraction"
+    confidence: 0.7
+    note: "UE 的参数对象能做复杂的忽略规则, Unity 主要靠 LayerMask 和 IgnoreCollision."
+
+  - id: p-ecc-visibility
+    category: physics
+    ue: ECC_Visibility
+    unity: "LayerMask.GetMask(\"Default\") / 自定义 Layer"
+    confidence: 0.6
+    note: "需要在 Unity 项目里手工建 Layer 并让工具生成的代码引用同名 Layer, 否则射线检测不到东西. 属于必须人工确认的项."
+
+  - id: p-sweep
+    category: physics
+    ue: SweepSingleByChannel
+    unity: "Physics.SphereCast / CapsuleCast"
+    confidence: 0.8
+    note: ""
+
+  # ---------------- 数学 ----------------
+  - id: n-clamp
+    category: math
+    ue: FMath::Clamp
+    unity: Mathf.Clamp
+    confidence: 1.0
+    note: ""
+
+  - id: n-abs
+    category: math
+    ue: FMath::Abs
+    unity: Mathf.Abs
+    confidence: 1.0
+    note: ""
+
+  - id: n-lerp
+    category: math
+    ue: FMath::Lerp
+    unity: Mathf.Lerp
+    confidence: 1.0
+    note: ""
+
+  - id: n-finterpto
+    category: math
+    ue: FMath::FInterpTo
+    unity: "value = Mathf.Lerp(value, target, 1f - Mathf.Exp(-speed * Time.deltaTime))"
+    confidence: 0.8
+    note: "不能直接用 Mathf.Lerp, 因为 FInterpTo 是帧率无关的指数逼近, 需要上面这个写法才对等."
+
+  - id: n-vsize
+    category: math
+    ue: "Size()"
+    unity: ".magnitude"
+    confidence: 1.0
+    note: ""
+
+  - id: n-vsizesq
+    category: math
+    ue: "SizeSquared()"
+    unity: ".sqrMagnitude"
+    confidence: 1.0
+    note: "比较距离时优先用 sqrMagnitude, 避免开方."
+
+  - id: n-getnormal
+    category: math
+    ue: "GetSafeNormal()"
+    unity: ".normalized"
+    confidence: 0.95
+    note: "UE 的 GetSafeNormal 对零向量返回零, Unity 的 normalized 对零向量也返回零, 行为一致."
+
+  - id: n-dot
+    category: math
+    ue: "Dot()"
+    unity: Vector3.Dot
+    confidence: 1.0
+    note: ""
+
+  - id: n-cross
+    category: math
+    ue: "Cross()"
+    unity: Vector3.Cross
+    confidence: 0.9
+    note: "两边坐标系手性一致(都是左手), 但 Z-up 与 Y-up 不同, 跨引擎拷贝数值前必须做轴转换."
+
+  - id: n-acos
+    category: math
+    ue: FMath::Acos
+    unity: Mathf.Acos
+    confidence: 1.0
+    note: "返回弧度, 两边一致."
+
+  - id: n-rad2deg
+    category: math
+    ue: FMath::RadiansToDegrees
+    unity: Mathf.Rad2Deg
+    confidence: 1.0
+    note: ""
+
+  # ---------------- 日志与调试 ----------------
+  - id: d-uelog
+    category: debug
+    ue: UE_LOG
+    unity: Debug.Log / Debug.LogWarning / Debug.LogError
+    confidence: 1.0
+    note: ""
+
+  - id: d-drawline
+    category: debug
+    ue: DrawDebugLine
+    unity: Debug.DrawLine (仅在 Scene 视图可见)
+    confidence: 0.9
+    note: ""
+
+  - id: d-check
+    category: debug
+    ue: "check()"
+    unity: Debug.Assert
+    confidence: 0.9
+    note: ""
+
+  # ---------------- 时间 ----------------
+  - id: tm-time
+    category: timer
+    ue: "GetWorld()->GetTimeSeconds()"
+    unity: Time.time
+    confidence: 0.95
+    note: "两者都是从游戏开始累计的秒数."
+
+  - id: tm-deltatime
+    category: timer
+    ue: "DeltaTime / GetWorld()->GetDeltaSeconds()"
+    unity: Time.deltaTime
+    confidence: 1.0
+    note: ""
+
+  - id: tm-setttimer
+    category: timer
+    ue: "GetWorldTimerManager().SetTimer"
+    unity: "Coroutine / Invoke / 累积计时器字段"
+    confidence: 0.75
+    note: "UE 的 TimerManager 支持循环+首次延迟+句柄取消. Unity 侧最小实现是累积一个 float 计时器, 精确的话用 Coroutine."
+
+  # ==========================================================================
+  # 以下条目由 `uv run migrate.py scan` 的"未覆盖符号"清单反哺而来 —— 这就是扩展方式:
+  # 扫描报什么, 就往这里补什么. 补完覆盖率上升, 模型幻觉下降.
+  # ==========================================================================
+
+  - id: x-actorcomponent
+    category: macro
+    ue: UActorComponent
+    unity: "独立挂载的 MonoBehaviour 组件"
+    confidence: 0.9
+    note: "UE 的组件由 CreateDefaultSubobject 在构造函数里创建, 属于宿主对象的一部分; Unity 组件必须挂在 GameObject 上, 通常由 Inspector 拖引用或 GetComponent 拿."
+
+  - id: x-createdefaultsubobject
+    category: macro
+    ue: CreateDefaultSubobject
+    unity: "[SerializeField] 引用 + Awake 里 GetComponent/AddComponent 兜底"
+    confidence: 0.85
+    note: "UE 在构造函数里凭空造组件; Unity 不能这样, 要么在编辑器里挂好拖进来, 要么运行时 AddComponent. 工具应生成'Inspector 优先, 代码兜底'的写法."
+
+  - id: x-setupattachment
+    category: macro
+    ue: SetupAttachment
+    unity: "transform.SetParent(parent, false)"
+    confidence: 0.85
+    note: "第二个参数 false 表示保持本地坐标不变, 通常需要. 层级关系在 Unity 侧一般直接在编辑器里摆好."
+
+  - id: x-socketname
+    category: camera
+    ue: SocketName
+    unity: "(相机作为弹簧臂枢轴的子物体)"
+    confidence: 0.8
+    note: "UE 用插槽名挂相机; Unity 直接把 Camera 挂成枢轴的子 Transform."
+
+  - id: x-uproperty-visibleanywhere
+    category: macro
+    ue: VisibleAnywhere
+    unity: "[SerializeField] private (Inspector 只读展示)"
+    confidence: 0.9
+    note: "Unity 没有'只读但可见'的原生属性, 想只读展示需要写自定义 Editor 或用 [ReadOnly] 这类第三方特性; 最小实现就是 [SerializeField] private."
+
+  - id: x-blueprintreadonly
+    category: macro
+    ue: BlueprintReadOnly
+    unity: "public 只读属性 / [SerializeField] private + 公开 getter"
+    confidence: 0.9
+    note: ""
+
+  - id: x-blueprintpure
+    category: macro
+    ue: BlueprintPure
+    unity: "无副作用的 public 方法 / 属性 getter"
+    confidence: 0.9
+    note: ""
+
+  - id: x-classgroup-meta
+    category: macro
+    ue: "ClassGroup"
+    unity: "(删除, 对应 [AddComponentMenu(\"...\")])"
+    confidence: 0.85
+    note: "只是编辑器分类信息, 删掉不影响功能."
+
+  - id: x-eaxis
+    category: math
+    ue: EAxis
+    unity: "transform.right / transform.up / transform.forward"
+    confidence: 0.85
+    note: "UE 用 FRotationMatrix(rot).GetUnitAxis(EAxis::X) 取朝向; Unity 直接 transform.forward / right / up, 语义更直观."
+
+  - id: x-rotationmatrix
+    category: math
+    ue: FRotationMatrix
+    unity: "Quaternion.Euler(0, yaw, 0) * Vector3.forward"
+    confidence: 0.8
+    note: "UE 把 Yaw 单独拿出来构造旋转矩阵求方向; Unity 惯用 Quaternion.Euler(0f, yaw, 0f) 乘基向量."
+
+  - id: x-kinda-small-number
+    category: math
+    ue: KINDA_SMALL_NUMBER
+    unity: Mathf.Epsilon
+    confidence: 0.9
+    note: "UE 的 KINDA_SMALL_NUMBER = 1e-4, Unity 的 Mathf.Epsilon 只有 1.4e-45, 差别很大. 做'接近零'判断时建议直接用常量 1e-4f, 语义才一致."
+
+  - id: x-isnearlyequal
+    category: math
+    ue: FMath::IsNearlyEqual
+    unity: Mathf.Approximately / Mathf.Abs(a - b) < tol
+    confidence: 0.9
+    note: "UE 可以传自定义容差; Unity 的 Approximately 容差固定, 需要自定义容差时手写 Mathf.Abs 比较."
+
+  - id: x-addmovementinput
+    category: character
+    ue: AddMovementInput
+    unity: "累积输入到自定义 velocity / 位移向量, 再交给 controller.Move"
+    confidence: 0.85
+    note: "UE 的 AddMovementInput 是把方向喂给 CharacterMovement 累积; Unity 没有这层, 必须自己累积每帧位移."
+
+  - id: x-launchcharacter
+    category: character
+    ue: LaunchCharacter
+    unity: "velocity = launchVelocity (自己维护的纵向速度)"
+    confidence: 0.85
+    note: "单位换算: UE cm/s -> Unity m/s."
+
+  - id: x-getvelocity
+    category: character
+    ue: GetVelocity
+    unity: "自定义 velocity 字段"
+    confidence: 0.85
+    note: "CharacterController 只在 Move 之后暴露只读的 velocity, 而且不含重力分量, 所以必须自己维护速度状态."
+
+  - id: x-initcapsule
+    category: character
+    ue: InitCapsuleSize
+    unity: "CharacterController.height / radius"
+    confidence: 0.85
+    note: "UE 传的是半径+半高(cm); Unity 的 height 是总高. 换算: height = 2 * halfHeight * 0.01, radius = r * 0.01."
+
+  - id: x-getcapsulecomponent
+    category: character
+    ue: GetCapsuleComponent
+    unity: "CharacterController / CapsuleCollider"
+    confidence: 0.85
+    note: ""
+
+  - id: x-getowner
+    category: macro
+    ue: GetOwner
+    unity: gameObject / this
+    confidence: 0.9
+    note: ""
+
+  - id: x-getcontroller
+    category: camera
+    ue: GetController
+    unity: "(Unity 没有控制器对象, yaw/pitch 自己存)"
+    confidence: 0.8
+    note: "UE 的 Controller 承担朝向输入; Unity 里摄像机朝向通常直接由角色脚本或 Cinemachine 的 POV 控制."
+
+  - id: x-setcontrolrotation
+    category: camera
+    ue: SetControlRotation
+    unity: "cameraPivot.rotation = Quaternion.Euler(pitch, yaw, 0)"
+    confidence: 0.85
+    note: "UE 的 Pitch 为正表示抬头; Unity 的 euler.x 为正表示低头. 俯仰角传入前通常要取负."
+
+  - id: x-orientrotationtomovement
+    category: character
+    ue: bOrientRotationToMovement
+    unity: "手动朝移动方向插值旋转: transform.rotation = Quaternion.Slerp(...)"
+    confidence: 0.8
+    note: "Unity 不会自动转身, 需要每帧用 Quaternion.LookRotation(moveDir) 配合 Slerp 做平滑转身."
+
+  - id: x-rotationrate
+    category: character
+    ue: RotationRate
+    unity: "转身插值速度 (Quaternion.Slerp 的 t 系数)"
+    confidence: 0.8
+    note: "UE 是 度/秒; Unity 侧一般换算成 Slerp 的插值速度, 不是同一量纲, 需要调参对齐手感."
+
+  - id: x-aircontrol
+    category: character
+    ue: AirControl
+    unity: "空中时的水平输入系数 (自写)"
+    confidence: 0.8
+    note: ""
+
+  - id: x-busecapsule
+    category: character
+    ue: bUseControllerRotationYaw
+    unity: "角色 Y 轴是否跟随相机朝向 (自写分支)"
+    confidence: 0.8
+    note: ""
+
+  - id: x-primaryactortick
+    category: lifecycle
+    ue: PrimaryActorTick
+    unity: "enabled 开关 / 自定义计时器控制调用频率"
+    confidence: 0.85
+    note: "UE 可以设 TickInterval 降频; Unity 的 Update 是每帧固定调用, 降频要自己做计时器累加."
+
+  - id: x-tickinterval
+    category: lifecycle
+    ue: TickInterval
+    unity: "自定义累加计时器 (每 N 秒执行一次)"
+    confidence: 0.8
+    note: "把 UE 的降频 Tick 翻译成 accumulator >= interval 的写法, 这是很常见的迁移点."

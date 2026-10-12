@@ -1,0 +1,8 @@
+# 统一换行符: 仓库内存 LF, 检出时按平台自动转换, 避免整文件级别的假 diff
+* text=auto
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.dll binary
+*.uasset binary

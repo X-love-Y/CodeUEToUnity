@@ -1,0 +1,23 @@
+# ===== 中间产物与生成物 =====
+work/
+reports/
+verify/bin/
+verify/obj/
+verify/CompileCheck.csproj
+
+# .NET
+bin/
+obj/
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+
+# 编辑器
+.vs/
+.vscode/
+.idea/
+
+# 探测残留
+.tmpcheck/
